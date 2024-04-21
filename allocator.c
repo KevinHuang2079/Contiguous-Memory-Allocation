@@ -18,11 +18,11 @@
 
 unsigned char *memory;
 int memorySize;
-GArray* holeList;
-GHashTable* hashmap; //key = processes, value = array int of start, end ranges
+GArray* holeList; //hole = [start, end]
+GHashTable* hashmap; //key = process, value = [start, end] 
 
 void printMemory() {
-    printf("    Memory Array:\n");
+    printf("Memory Array:\n");
     for (unsigned int i = 0; i < memorySize; i++) {
         printf("%d ", memory[i]);
     }
@@ -30,12 +30,99 @@ void printMemory() {
 }
 
 void printHoleList(){
-    printf("    Hole List:\n");
+    printf("Hole List:\n");
     for (unsigned int i = 0; i < holeList->len; i++) {
         int* currHole = g_array_index(holeList, int*, i);
         printf("    Hole %d: Start=%d, End=%d, Size=%d\n", i + 1, currHole[0], currHole[1], currHole[1]-currHole[0]+1);
     }
 }
+
+void printTable(GHashTable* table) {
+    printf("Process Hashmap:\n");
+    GList* keys = g_hash_table_get_keys(table);
+    for (GList* iter = keys; iter != NULL; iter = g_list_next(iter)) {
+        char* key = iter->data;
+        int* value = g_hash_table_lookup(table, key);
+        printf(" Key: %s\n", key);
+        printf(" Values:\n");
+        printf(" %d\n", value[0]);  // Print the first element of the int* array
+        printf(" %d\n", value[1]);  // Print the second element of the int* array
+    }
+    g_list_free(keys);
+}
+
+//find a process given the start and ending address
+char* findProcess(int start, int end){
+    GList* keys = g_hash_table_get_keys(hashmap);
+    for (GList* iter = keys; iter != NULL; iter = g_list_next(iter)) {
+        char* key = iter->data;
+        int* value = g_hash_table_lookup(hashmap, key);
+        if (value[0] == start){
+            return key;
+        }
+    }
+    g_list_free(keys);
+    return "";
+}
+
+int findNextProcessEnding(GHashTable* table){
+    unsigned int nextProcessEnding = memorySize -1;
+    char* earliestProcess;
+    GList* keys = g_hash_table_get_keys(table);
+    for (GList* iter = keys; iter != NULL; iter = g_list_next(iter)) {
+        char* key = iter->data;
+        int* value = g_hash_table_lookup(table, key);
+        if (value[1] < nextProcessEnding){
+            nextProcessEnding = value[1];
+            earliestProcess = key;
+        }
+    }
+    g_list_free(keys);
+    //update temp
+    g_hash_table_remove(table, earliestProcess);
+    return nextProcessEnding;
+}
+
+
+void STAT(){
+    unsigned int start = 0;
+    unsigned int end;
+    GHashTable* temp = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL); 
+    //copy entries from the hashMap to the temp hashmap
+    GList* tempKeys = g_hash_table_get_keys(hashmap);
+    for (GList* iter = tempKeys; iter != NULL; iter = g_list_next(iter)) {
+        char* key = iter->data;
+        int* value = g_hash_table_lookup(hashmap, key);
+        g_hash_table_insert(temp, g_strdup(key), value);
+    }
+    g_list_free(tempKeys);
+
+
+    unsigned int nextProcessEnding = findNextProcessEnding(temp);
+    for (unsigned int i = 0 ; i < memorySize ; ++i){
+        if (i == nextProcessEnding){
+            end = i;
+            if (memory[start] == true){
+                char* process = findProcess(start, end);
+                printf("Addresses [%d:%d] Process %s\n", start, end, process);
+            }   
+            else {
+                printf("Addresses [%d:%d] Unused\n", start, end);
+            }
+            nextProcessEnding = findNextProcessEnding(temp);
+            start = i+1;
+        }   
+        else if (memory[i] != memory[start]){
+            end = i-1;
+            printf("Addresses [%d:%d] Unused\n", start, end);
+            start = i;
+        }   
+        else if (i == memorySize-1){
+            printf("Addresses [%d:%d] Unused\n", start, i);
+        }
+    }
+}
+
 
 void trimWhitespace(char* str) {
     int start = 0;
@@ -44,7 +131,7 @@ void trimWhitespace(char* str) {
     while (isspace(str[start])) {
         start++;
     }
-    //find where the end (the first char moving backwards)
+    //find where the end is (the first char moving backwards)
     while (end > start && isspace(str[end])) {
         end--;
     }
@@ -56,11 +143,9 @@ void trimWhitespace(char* str) {
 
 void fillMemory(int start, int size){
     for (unsigned int i = start; i < start+size ; ++i){
-        memory[i] = true; //true for a full slot 
+        memory[i] = true; //full slot
     }
-    printMemory();
 }
-
 
 void updateHoles(){
     holeList->len = 0;
@@ -92,7 +177,6 @@ void updateHoles(){
                 g_array_append_val(holeList, hole);
         }   
     }
-    printHoleList();
 }
 
 
@@ -104,18 +188,13 @@ void FIRST_request(char* process, int requestAmount, char* allocationApproach){
         int* currHole = g_array_index(holeList, int*, i);
         int currStart = currHole[0];
         int currEnd = currHole[1];
-        printf("currHoleSize=%d, requestAmount=%d\n", currHole[1]-currHole[0]+1, requestAmount);
         if (requestAmount <= currEnd - currStart+1){
-            printf("available space, adding process...\n");
             //add the process to the hashmap
             int* processRange = malloc(sizeof(int)*2);
             processRange[0] = currStart;
-            processRange[1] = currStart + requestAmount;
+            processRange[1] = currStart + requestAmount -1;
             g_hash_table_insert(hashmap, g_strdup(process), processRange);
-
-            printf("updating memory...\n");
             //update the memory
-            printf("    added processRange: %d, %d\n", processRange[0], processRange[1]);
             fillMemory(processRange[0], requestAmount);
             updateHoles();
             break;
@@ -140,7 +219,6 @@ void BEST_request(char* process, int requestAmount, char* allocationApproach){
         int currStart = currHole[0];
         int currEnd = currHole[1];
         int currSize = currEnd - currStart +1;
-        printf("i: %d currSize: %d\n", i, currSize);
         if (currSize < minSize && requestAmount <= minSize){
             minSize = currSize;
             minStart = currStart;
@@ -149,16 +227,12 @@ void BEST_request(char* process, int requestAmount, char* allocationApproach){
 
     //found available slot
     if (requestAmount <= minSize){
-        printf("available space, adding process...\n");
         //add the process to the hashmap
         int* processRange = malloc(sizeof(int)*2);
         processRange[0] = minStart;
-        processRange[1] = minStart + requestAmount;
+        processRange[1] = minStart + requestAmount -1;
         g_hash_table_insert(hashmap, g_strdup(process), processRange);
-
-        printf("updating memory...\n");
         //update the memory
-        printf("    added processRange: %d, %d\n", processRange[0], processRange[1]);
         fillMemory(processRange[0], requestAmount);
         updateHoles();
     }
@@ -189,16 +263,12 @@ void WORST_request(char* process, int requestAmount, char* allocationApproach){
     
     //found available slot
     if (requestAmount <= maxSize){
-        printf("available space, adding process...\n");
         //add the process to the hashmap
         int* processRange = malloc(sizeof(int)*2);
         processRange[0] = maxStart;
-        processRange[1] = maxStart + requestAmount;
+        processRange[1] = maxStart + requestAmount -1;
         g_hash_table_insert(hashmap, g_strdup(process), processRange);
-
-        printf("updating memory...\n");
         //update the memory
-        printf("    added processRange: %d, %d\n", processRange[0], processRange[1]);
         fillMemory(processRange[0], requestAmount);
         updateHoles();
     }
@@ -231,9 +301,8 @@ void release(char* process){
         int* processRange = g_hash_table_lookup(hashmap, process);
         int processStart = processRange[0];
         int processEnd = processRange[1];
-
         //0 out the memory block
-        for (unsigned int i = processStart; i < processEnd ; ++i){
+        for (unsigned int i = processStart; i < processEnd+1 ; ++i){
             memory[i] = false;
         }
 
@@ -242,32 +311,77 @@ void release(char* process){
 
         //delete the process in hashmap
         gboolean removed = g_hash_table_remove(hashmap, process);
-        if (removed) {
-            printf("Process %s released\n", process);
-        } else {
-            printf("Failed to remove process %s\n", process);
-        }
-        printMemory();
-        printHoleList();
     }
     else {
         printf("No process %s\n", process);
-        printMemory();
-        printHoleList();
     }
 }
 
+//loop through processes and return one that is earliest in memory
+char* getEarliestProcess(GHashTable* table){
+    char* earliestProcess = NULL;
+    int earliestProcessStart = INT_MAX;
+    GList* keys = g_hash_table_get_keys(table); 
+
+    for (GList* iter = keys; iter != NULL; iter = g_list_next(iter)) {
+        char* key = iter->data;
+        int* value = g_hash_table_lookup(table, key);
+        if(value != NULL && value[0] < earliestProcessStart){
+            earliestProcess = key;
+            earliestProcessStart = value[0];
+        }
+    }
+
+    g_list_free(keys);
+    return earliestProcess;
+}
+
+
 //Compact unused holes of memory into one single block.
 void compact(){
-    int lowestStart = INT_MAX;
-    //loop through processes and if one of them has start = 0
-    for ( unsigned int i = 0 ; i < hashmap->len ; ++i ){
-        if ( )
+    unsigned int lowestOpenSpot = INT_MAX;
+    int i = 0;
+    GHashTable* temp = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL); 
+
+    //copy entries from the hashMap to the temp hashmap
+    GList* keys = g_hash_table_get_keys(hashmap);
+    for (GList* iter = keys; iter != NULL; iter = g_list_next(iter)) {
+        char* key = iter->data;
+        int* value = g_hash_table_lookup(hashmap, key);
+        g_hash_table_insert(temp, g_strdup(key), value);
     }
-    
-    //if yes then loop through and find the lowest start number and have it start at the lowest end 
-    //if no then loop through and find the lowest start number and have it start at 0
+    g_list_free(keys);
+
+    //compact by deleting keys from temp and updating memory and hashmap
+    while (g_hash_table_size(temp) > 0) {
+        char* earliestProcess = getEarliestProcess(temp);
+        int* earliestProcessInfo = g_hash_table_lookup(temp, earliestProcess);
+        int* newProcessInfo = malloc(sizeof(int) * 2);
+        int newStart = i;
+        int processSize = (earliestProcessInfo[1] - earliestProcessInfo[0] +1);
+        newProcessInfo[0] = newStart;
+        newProcessInfo[1] = newStart + processSize-1; 
+
+
+        //update memory
+        fillMemory(newStart, processSize); //new process start, and size of process
+        //update main hashMap
+        g_hash_table_replace(hashmap, g_strdup(earliestProcess), newProcessInfo);
+        //update temp
+        g_hash_table_remove(temp, earliestProcess);
+        i = newProcessInfo[1] +1; //end + 1
+        free(earliestProcessInfo);
+    }
+    //clear the memory slots after the compact starting from the end of the last process +1
+    while ( i < memorySize){
+        memory[i] = false;
+        ++i;
+    }
+
+    g_hash_table_destroy(temp);
+    updateHoles();
 }
+
 
 //Report the regions of free and allocated memory
 int main( int argc, char* argv[] ){
@@ -325,13 +439,13 @@ int main( int argc, char* argv[] ){
 
         //
         else if (strcmp(words[0], "C") == 0){
-
-        }
+            compact();
+        }   
 
         //
         else if (strcmp(words[0], "STAT") == 0){
-
-        }
+            STAT();
+        }   
         else if (strcmp(words[0], "X") == 0){
             printf("exiting...");
             exit(0);
